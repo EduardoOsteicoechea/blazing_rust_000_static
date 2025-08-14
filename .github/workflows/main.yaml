@@ -34,17 +34,15 @@ jobs:
           echo "Files copied to temporary directory:"
           ls -l "$FLAT_STATIC_DIR" # List the files to verify they are flat.
 
-          # Create a tar.gz archive of the *contents* of the flattened directory.
-          # We navigate into the FLAT_STATIC_DIR, then tar its contents.
+          # Define the archive name.
           ARCHIVE_NAME="static_files_bundle.tar.gz"
-          cd "$FLAT_STATIC_DIR"
-          tar -czvf "../../$ARCHIVE_NAME" . # Create archive one level up from FLAT_STATIC_DIR
-          cd - # Go back to original directory
-
-          echo "Created archive: $ARCHIVE_NAME"
+          # Create a tar.gz archive of the *contents* of the flattened directory, *within* the same temporary directory.
+          tar -czvf "$FLAT_STATIC_DIR/$ARCHIVE_NAME" -C "$FLAT_STATIC_DIR" . # Create archive within the temp dir, from its contents
           
-          # Make the path of the archive available as an output for the next step.
-          echo "archive_path=$ARCHIVE_NAME" >> $GITHUB_OUTPUT
+          echo "Created archive: $FLAT_STATIC_DIR/$ARCHIVE_NAME"
+          
+          # Make the full path of the archive available as an output for the next step.
+          echo "archive_path=$FLAT_STATIC_DIR/$ARCHIVE_NAME" >> $GITHUB_OUTPUT
 
       - name: Ensure /var/www/html directory exists and is writable on EC2
         uses: appleboy/ssh-action@master # Use SSH action to run commands on EC2.
