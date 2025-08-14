@@ -8,8 +8,8 @@ jobs:
   deploy:
     runs-on: ubuntu-latest # The job will run on a fresh Ubuntu runner provided by GitHub Actions.
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3 # Checks out your repository code (blazing_rust_000_static) into the runner.
+      - name: Checkout workflow file (no repo content needed on runner for this strategy)
+        uses: actions/checkout@v3 # Only needed to run the workflow itself, not to access repo content for copy.
 
       - name: Set up AWS credentials
         uses: aws-actions/configure-aws-credentials@v1 # Configures AWS credentials for interacting with AWS services.
@@ -18,68 +18,45 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }} # Your AWS Secret Access Key, stored as a GitHub secret.
           aws-region: ${{ secrets.AWS_REGION }} # Your AWS region, stored as a GitHub secret.
 
-      - name: Prepare and Archive Flattened Static Files on Runner
-        id: prepare_archive # Assign an ID to this step to reference its outputs later.
-        run: |
-          # Create a unique temporary directory on the GitHub Actions runner.
-          # This is where we'll collect all .css and .js files in a flat structure.
-          FLAT_STATIC_DIR=$(mktemp -d)
-          echo "Created temporary directory for flattened files on runner: $FLAT_STATIC_DIR"
-
-          # Find all .css and .js files in the entire repository (checked out in current directory)
-          # and copy them directly into the FLAT_STATIC_DIR.
-          # The -L option for cp ensures symbolic links are followed.
-          # If files with the same name exist in different original subdirectories, the last one found will overwrite previous ones.
-          find . -type f \( -name "*.css" -o -name "*.js" \) -exec cp -L {} "$FLAT_STATIC_DIR" \;
-          
-          echo "Files copied to temporary directory:"
-          ls -l "$FLAT_STATIC_DIR" # List the files to verify they are flat.
-
-          # Define the archive name.
-          ARCHIVE_NAME="static_files_bundle.tar.gz"
-          # Create a tar.gz archive of the *contents* of the flattened directory, *within* the same temporary directory.
-          # The -C "$FLAT_STATIC_DIR" . part ensures tar archives the *contents* of FLAT_STATIC_DIR, not the directory itself.
-          tar -czvf "$FLAT_STATIC_DIR/$ARCHIVE_NAME" -C "$FLAT_STATIC_DIR" .
-          
-          echo "Created archive: $FLAT_STATIC_DIR/$ARCHIVE_NAME"
-          
-          # Make the full path of the archive available as an output for the next step.
-          echo "archive_path=$FLAT_STATIC_DIR/$ARCHIVE_NAME" >> $GITHUB_OUTPUT
-
-      - name: Ensure /var/www/html directory exists and is writable on EC2
-        uses: appleboy/ssh-action@master # Use SSH action to run commands on EC2.
+      - name: Deploy Static Files via EC2 SSH Clone and Move
+        uses: appleboy/ssh-action@master # Uses the SSH action to connect to your EC2 instance and run commands.
         with:
           host: ${{ secrets.HOST_DNS }}
           username: ${{ secrets.USERNAME }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
+            REMOTE_REPO_URL="https://github.com/EduardoOsteicoechea/blazing_rust_000_static.git"
+            TEMP_CLONE_DIR="/tmp/static_repo_$(date +%s)" # Unique temporary directory for cloning
+
+            echo "Ensuring /var/www/html exists and has correct permissions..."
+            # Create /var/www/html if it doesn't exist.
+            sudo mkdir -p /var/www/html
+            # Ensure the SSH user has write permissions to /var/www/html and its contents.
+            # Replace ${{ secrets.USERNAME }} with your actual SSH username if it's not 'ubuntu'.
             sudo chown -R ${{ secrets.USERNAME }}:${{ secrets.USERNAME }} /var/www/html
+            # Set appropriate permissions for web content (read/execute for others, full for owner).
             sudo chmod -R 755 /var/www/html
-            sudo find /var/www/html/ -maxdepth 1 -type f \( -name "*.css" -o -name "*.js" \) -delete
 
-      - name: Copy Static Files Archive to EC2
-        uses: appleboy/scp-action@master # Uses SCP action to securely copy the prepared archive.
-        with:
-          host: ${{ secrets.HOST_DNS }}
-          username: ${{ secrets.USERNAME }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "${{ steps.prepare_archive.outputs.archive_path }}"
-          target: "/tmp/"
-          overwrite: true
+            echo "Cloning repository to temporary directory: $TEMP_CLONE_DIR"
+            # Clone the repository into a temporary directory on the EC2 instance.
+            git clone "$REMOTE_REPO_URL" "$TEMP_CLONE_DIR"
 
-      - name: Extract Files and Cleanup on EC2, Restart Nginx
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ secrets.HOST_DNS }}
-          username: ${{ secrets.USERNAME }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            ARCHIVE_NAME=$(basename "${{ steps.prepare_archive.outputs.archive_path }}")
-            REMOTE_ARCHIVE_PATH="/tmp/$ARCHIVE_NAME"
+            # Check if cloning was successful
+            if [ ! -d "$TEMP_CLONE_DIR" ]; then
+                echo "Error: Failed to clone repository $REMOTE_REPO_URL"
+                exit 1
+            fi
 
-            echo "Extracting $REMOTE_ARCHIVE_PATH to /var/www/html..."
-            sudo tar -xzvf "$REMOTE_ARCHIVE_PATH" -C /var/www/html/
-            sudo rm -f "$REMOTE_ARCHIVE_PATH"
+            echo "Copying .css and .js files to /var/www/html/ (flattening structure)..."
+            # Find all .css and .js files within the cloned repository and copy them
+            # directly into /var/www/html/.
+            # The -t option for cp ensures the target directory exists.
+            # The last found file will overwrite any previous files with the same name.
+            sudo find "$TEMP_CLONE_DIR" -type f \( -name "*.css" -o -name "*.js" \) -exec cp {} /var/www/html/ \;
+
+            echo "Cleaning up temporary cloned repository: $TEMP_CLONE_DIR"
+            # Remove the temporary cloned repository.
+            sudo rm -rf "$TEMP_CLONE_DIR"
 
             echo "Clearing Nginx cache..."
             sudo rm -rf /var/cache/nginx/*
