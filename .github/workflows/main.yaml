@@ -1,4 +1,4 @@
-name: Deploy Static Files to EC2
+name: Deploy Blazing Rust Static Files to EC2
 
 on:
   push:
@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest # The job will run on a fresh Ubuntu runner provided by GitHub Actions.
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3 # Checks out your repository code into the runner.
+        uses: actions/checkout@v3 # Checks out your repository code (blazing_rust_000_static) into the runner.
 
       - name: Set up AWS credentials
         uses: aws-actions/configure-aws-credentials@v1 # Configures AWS credentials for interacting with AWS services.
@@ -21,7 +21,8 @@ jobs:
       - name: Prepare and Archive Flattened Static Files on Runner
         id: prepare_archive # Assign an ID to this step to reference its outputs later.
         run: |
-          # Create a temporary directory on the runner to collect all static files in a flat structure.
+          # Create a unique temporary directory on the GitHub Actions runner.
+          # This is where we'll collect all .css and .js files in a flat structure.
           FLAT_STATIC_DIR=$(mktemp -d)
           echo "Created temporary directory for flattened files on runner: $FLAT_STATIC_DIR"
 
@@ -37,7 +38,8 @@ jobs:
           # Define the archive name.
           ARCHIVE_NAME="static_files_bundle.tar.gz"
           # Create a tar.gz archive of the *contents* of the flattened directory, *within* the same temporary directory.
-          tar -czvf "$FLAT_STATIC_DIR/$ARCHIVE_NAME" -C "$FLAT_STATIC_DIR" . # Create archive within the temp dir, from its contents
+          # The -C "$FLAT_STATIC_DIR" . part ensures tar archives the *contents* of FLAT_STATIC_DIR, not the directory itself.
+          tar -czvf "$FLAT_STATIC_DIR/$ARCHIVE_NAME" -C "$FLAT_STATIC_DIR" .
           
           echo "Created archive: $FLAT_STATIC_DIR/$ARCHIVE_NAME"
           
@@ -51,17 +53,8 @@ jobs:
           username: ${{ secrets.USERNAME }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            echo "Ensuring /var/www/html exists and has correct permissions..."
-            # Create the directory if it doesn't exist. -p means no error if it exists.
-            sudo mkdir -p /var/www/html
-            # Change ownership to your SSH user so it has write permissions.
-            # Replace ${{ secrets.USERNAME }} with your actual SSH username (e.g., 'ubuntu').
             sudo chown -R ${{ secrets.USERNAME }}:${{ secrets.USERNAME }} /var/www/html
-            # Set appropriate permissions for web content (read/execute for others, full for owner).
             sudo chmod -R 755 /var/www/html
-            # Clean up existing CSS/JS files in /var/www/html to ensure a fresh deployment,
-            # ensuring no old files persist that aren't in the new deployment.
-            echo "Cleaning up existing .css and .js files in /var/www/html..."
             sudo find /var/www/html/ -maxdepth 1 -type f \( -name "*.css" -o -name "*.js" \) -delete
 
       - name: Copy Static Files Archive to EC2
@@ -70,12 +63,12 @@ jobs:
           host: ${{ secrets.HOST_DNS }}
           username: ${{ secrets.USERNAME }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: "${{ steps.prepare_archive.outputs.archive_path }}" # Path to the tar.gz archive on the runner.
-          target: "/tmp/" # Temporary destination directory on EC2.
-          overwrite: true # Overwrite the archive if it exists.
+          source: "${{ steps.prepare_archive.outputs.archive_path }}"
+          target: "/tmp/"
+          overwrite: true
 
       - name: Extract Files and Cleanup on EC2, Restart Nginx
-        uses: appleboy/ssh-action@master # Use SSH action to perform final operations on EC2.
+        uses: appleboy/ssh-action@master
         with:
           host: ${{ secrets.HOST_DNS }}
           username: ${{ secrets.USERNAME }}
@@ -85,12 +78,8 @@ jobs:
             REMOTE_ARCHIVE_PATH="/tmp/$ARCHIVE_NAME"
 
             echo "Extracting $REMOTE_ARCHIVE_PATH to /var/www/html..."
-            # Extract the archive directly into /var/www/html.
-            # -C /var/www/html changes the directory before extracting.
             sudo tar -xzvf "$REMOTE_ARCHIVE_PATH" -C /var/www/html/
-
-            echo "Removing temporary archive $REMOTE_ARCHIVE_PATH..."
-            sudo rm -f "$REMOTE_ARCHIVE_PATH" # Remove the archive file.
+            sudo rm -f "$REMOTE_ARCHIVE_PATH"
 
             echo "Clearing Nginx cache..."
             sudo rm -rf /var/cache/nginx/*
