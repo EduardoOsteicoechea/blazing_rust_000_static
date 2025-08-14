@@ -78,7 +78,7 @@ jobs:
             echo "Reloading Nginx configuration..."
             sudo systemctl reload nginx 
 
-      - name: Wait for deployment 
+      - name: Wait for deployment  
         run: |
           echo "Waiting 10 seconds for Nginx to settle..."
           sleep 10
