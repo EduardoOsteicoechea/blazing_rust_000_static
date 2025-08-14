@@ -1,0 +1,51 @@
+name: Deploy Static Files to EC2
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1 # Configures AWS credentials for interacting with AWS services.
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }} # Your AWS Access Key ID, stored as a GitHub secret.
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }} # Your AWS Secret Access Key, stored as a GitHub secret.
+          aws-region: ${{ secrets.AWS_REGION }} # Your AWS region, stored as a GitHub secret.
+
+      - name: Copy Static Files to EC2
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.HOST_DNS }}
+          username: ${{ secrets.USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "**/*.css,**/*.js"
+          target: "/var/www/html"
+          overwrite: true
+
+      - name: Connect to EC2 instance and Restart Nginx
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.HOST_DNS }}
+          username: ${{ secrets.USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            # Clear Nginx cache to ensure fresh static content is served.
+            echo "Clearing Nginx cache..."
+            sudo rm -rf /var/cache/nginx/*
+
+            # Restart and reload Nginx to ensure it picks up the new static files.
+            echo "Restarting Nginx..."
+            sudo systemctl restart nginx
+            echo "Reloading Nginx configuration..."
+            sudo systemctl reload nginx 
+
+      - name: Wait for deployment
+        run: |
+          echo "Waiting 10 seconds for Nginx to settle..."
+          sleep 10
