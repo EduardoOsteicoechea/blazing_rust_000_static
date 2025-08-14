@@ -18,6 +18,20 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
+      - name: Ensure /var/www/html directory exists on EC2
+        uses: appleboy/ssh-action@master # Use SSH action to run commands on EC2
+        with:
+          host: ${{ secrets.HOST_DNS }}
+          username: ${{ secrets.USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            echo "Ensuring /var/www/html exists and has correct permissions..."
+            sudo mkdir -p /var/www/html # Creates directory if it doesn't exist, -p means no error if exists
+            # Change ownership so your SSH user can write to it
+            sudo chown -R ${{ secrets.USERNAME }}:${{ secrets.USERNAME }} /var/www/html 
+            # Set appropriate permissions for web content, allowing Nginx to read
+            sudo chmod -R 755 /var/www/html 
+
       - name: Copy Static Files to EC2
         uses: appleboy/scp-action@master
         with:
@@ -35,11 +49,9 @@ jobs:
           username: ${{ secrets.USERNAME }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            # Clear Nginx cache to ensure fresh static content is served.
             echo "Clearing Nginx cache..."
             sudo rm -rf /var/cache/nginx/*
 
-            # Restart and reload Nginx to ensure it picks up the new static files.
             echo "Restarting Nginx..."
             sudo systemctl restart nginx
             echo "Reloading Nginx configuration..."
