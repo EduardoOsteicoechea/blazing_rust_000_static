@@ -18,15 +18,14 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }} # Your AWS Secret Access Key, stored as a GitHub secret.
           aws-region: ${{ secrets.AWS_REGION }} # Your AWS region, stored as a GitHub secret.
 
-      - name: Prepare flattened static files on runner
-        id: prepare_static_files # Assign an ID to this step to reference its outputs later.
+      - name: Prepare and Archive Flattened Static Files on Runner
+        id: prepare_archive # Assign an ID to this step to reference its outputs later.
         run: |
-          # Create a unique temporary directory on the GitHub Actions runner.
-          # This is where we'll collect all .css and .js files in a flat structure.
+          # Create a temporary directory on the runner to collect all static files in a flat structure.
           FLAT_STATIC_DIR=$(mktemp -d)
           echo "Created temporary directory for flattened files on runner: $FLAT_STATIC_DIR"
 
-          # Find all .css and .js files from the entire repository (checked out in current directory)
+          # Find all .css and .js files in the entire repository (checked out in current directory)
           # and copy them directly into the FLAT_STATIC_DIR.
           # The -L option for cp ensures symbolic links are followed.
           # If files with the same name exist in different original subdirectories, the last one found will overwrite previous ones.
@@ -35,10 +34,17 @@ jobs:
           echo "Files copied to temporary directory:"
           ls -l "$FLAT_STATIC_DIR" # List the files to verify they are flat.
 
-          # Store the full path and the basename of the temporary directory as outputs.
-          # These outputs will be used by subsequent steps.
-          echo "flat_static_dir=$FLAT_STATIC_DIR" >> $GITHUB_OUTPUT
-          echo "temp_dir_basename=$(basename "$FLAT_STATIC_DIR")" >> $GITHUB_OUTPUT
+          # Create a tar.gz archive of the *contents* of the flattened directory.
+          # We navigate into the FLAT_STATIC_DIR, then tar its contents.
+          ARCHIVE_NAME="static_files_bundle.tar.gz"
+          cd "$FLAT_STATIC_DIR"
+          tar -czvf "../../$ARCHIVE_NAME" . # Create archive one level up from FLAT_STATIC_DIR
+          cd - # Go back to original directory
+
+          echo "Created archive: $ARCHIVE_NAME"
+          
+          # Make the path of the archive available as an output for the next step.
+          echo "archive_path=$ARCHIVE_NAME" >> $GITHUB_OUTPUT
 
       - name: Ensure /var/www/html directory exists and is writable on EC2
         uses: appleboy/ssh-action@master # Use SSH action to run commands on EC2.
@@ -55,42 +61,38 @@ jobs:
             sudo chown -R ${{ secrets.USERNAME }}:${{ secrets.USERNAME }} /var/www/html
             # Set appropriate permissions for web content (read/execute for others, full for owner).
             sudo chmod -R 755 /var/www/html
-            # Clean up existing CSS/JS files in /var/www/html to ensure a fresh deployment.
+            # Clean up existing CSS/JS files in /var/www/html to ensure a fresh deployment,
+            # ensuring no old files persist that aren't in the new deployment.
             echo "Cleaning up existing .css and .js files in /var/www/html..."
             sudo find /var/www/html/ -maxdepth 1 -type f \( -name "*.css" -o -name "*.js" \) -delete
 
-      - name: Copy Flattened Static Files Directory to EC2
-        uses: appleboy/scp-action@master # Uses SCP action to securely copy the prepared directory.
+      - name: Copy Static Files Archive to EC2
+        uses: appleboy/scp-action@master # Uses SCP action to securely copy the prepared archive.
         with:
           host: ${{ secrets.HOST_DNS }}
           username: ${{ secrets.USERNAME }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          # The 'source' is the *entire temporary directory* created in the previous step.
-          # Note: No trailing slash here, so it copies the directory itself into the target.
-          source: "${{ steps.prepare_static_files.outputs.flat_static_dir }}"
-          target: "/var/www/html" # This will result in a path like /var/www/html/tmp.somerandomchars/
-          overwrite: true # Overwrite the temporary directory if it somehow exists.
+          source: "${{ steps.prepare_archive.outputs.archive_path }}" # Path to the tar.gz archive on the runner.
+          target: "/tmp/" # Temporary destination directory on EC2.
+          overwrite: true # Overwrite the archive if it exists.
 
-      - name: Move files and Cleanup on EC2, Restart Nginx
+      - name: Extract Files and Cleanup on EC2, Restart Nginx
         uses: appleboy/ssh-action@master # Use SSH action to perform final operations on EC2.
         with:
           host: ${{ secrets.HOST_DNS }}
           username: ${{ secrets.USERNAME }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            # Retrieve the basename of the temporary directory from the previous step's output.
-            TEMP_DIR_BASENAME="${{ steps.prepare_static_files.outputs.temp_dir_basename }}"
-            # Construct the full path to the temporary directory on the EC2 instance.
-            REMOTE_TEMP_DIR="/var/www/html/$TEMP_DIR_BASENAME"
+            ARCHIVE_NAME=$(basename "${{ steps.prepare_archive.outputs.archive_path }}")
+            REMOTE_ARCHIVE_PATH="/tmp/$ARCHIVE_NAME"
 
-            echo "Moving files from $REMOTE_TEMP_DIR to /var/www/html..."
-            # Move all files (not subdirectories) from the temporary directory into /var/www/html.
-            # The 'mv "$REMOTE_TEMP_DIR"/* /var/www/html/' command moves all contents.
-            sudo mv "$REMOTE_TEMP_DIR"/* /var/www/html/
+            echo "Extracting $REMOTE_ARCHIVE_PATH to /var/www/html..."
+            # Extract the archive directly into /var/www/html.
+            # -C /var/www/html changes the directory before extracting.
+            sudo tar -xzvf "$REMOTE_ARCHIVE_PATH" -C /var/www/html/
 
-            echo "Removing temporary directory $REMOTE_TEMP_DIR..."
-            # Remove the now-empty temporary directory.
-            sudo rm -rf "$REMOTE_TEMP_DIR"
+            echo "Removing temporary archive $REMOTE_ARCHIVE_PATH..."
+            sudo rm -f "$REMOTE_ARCHIVE_PATH" # Remove the archive file.
 
             echo "Clearing Nginx cache..."
             sudo rm -rf /var/cache/nginx/*
